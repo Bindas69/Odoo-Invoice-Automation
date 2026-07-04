@@ -54,3 +54,6 @@ secrets/
 # OS specific
 Thumbs.db
 .DS_Store
+
+# n8n runtime data (contains encrypted credentials/config)
+n8n_files/

@@ -1,0 +1,180 @@
+{
+  "name": "Serve Invoice PDFs",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "invoice-pdf",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "2147e5fa-30f6-4c45-a6bf-4d993e3c6749",
+      "name": "Webhook",
+      "webhookId": "a2cebd6f-d150-427f-8854-128f3037cd12"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://odoo:8069/web/session/authenticate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"db\": \"odoo\",\n    \"login\": \"admin\",\n    \"password\": \"admin\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        0
+      ],
+      "id": "813c0cc1-e460-48ec-ad7d-ec62a2430c6f",
+      "name": "Get Odoo Session"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "54aa6ee5-43cf-4216-87de-e4118de7436b",
+              "name": "session_cookie",
+              "value": "={{$json.headers['set-cookie'][0].split(';')[0]}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        384,
+        0
+      ],
+      "id": "1670e78a-d469-431c-8f8f-49f774f35b96",
+      "name": "Extract Session ID"
+    },
+    {
+      "parameters": {
+        "url": "=http://odoo:8069/report/pdf/account.report_invoice_with_payments/{{ $('Webhook').item.json.query.invoice_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $json.session_cookie }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        592,
+        0
+      ],
+      "id": "df0b3cdb-1ff8-4430-ad87-7baebba2b921",
+      "name": "Fetch Invoice PDF"
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseDataSource": "set",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        800,
+        0
+      ],
+      "id": "49e3588c-5984-4696-9b0d-38b641b197b4",
+      "name": "Respond to Webhook"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get Odoo Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Odoo Session": {
+      "main": [
+        [
+          {
+            "node": "Extract Session ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Session ID": {
+      "main": [
+        [
+          {
+            "node": "Fetch Invoice PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Invoice PDF": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "23e9c0d3-f418-4d82-8d75-975f4d9689c8",
+  "meta": {
+    "instanceId": "3ba22a21b4f43fda87a6406853dd8a83e9b892ed400089a9e6f03bb16f4fb9a6"
+  },
+  "nodeGroups": [],
+  "id": "t4URgWqGju1ha4nt",
+  "tags": [
+    {
+      "updatedAt": "2026-07-03T08:59:05.761Z",
+      "createdAt": "2026-07-03T08:59:05.761Z",
+      "id": "1SSNHay51PiH1OqW",
+      "name": "PortfolioProject#1"
+    }
+  ]
+}
