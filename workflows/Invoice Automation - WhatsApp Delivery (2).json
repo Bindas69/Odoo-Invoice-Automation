@@ -1,0 +1,489 @@
+{
+  "name": "Invoice Automation - WhatsApp Delivery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */2 * * *"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "2d3b15d9-4a93-4194-8eac-6ea2636ef7b7",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://odoo:8069/jsonrpc",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"service\": \"common\",\n    \"method\": \"login\",\n    \"args\": [\"odoo\", \"admin\", \"admin\"]\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        0
+      ],
+      "id": "2b5bbc94-5d15-4282-a737-f02f334bec2d",
+      "name": "Odoo Authenticate"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://odoo:8069/jsonrpc",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"service\": \"object\",\n    \"method\": \"execute_kw\",\n    \"args\": [\n      \"odoo\",\n      {{$json.result}},\n      \"admin\",\n      \"account.move\",\n      \"search_read\",\n      [\n        [\n          [\"move_type\", \"=\", \"out_invoice\"],\n          [\"state\", \"=\", \"posted\"]\n        ]\n      ],\n      {\n        \"fields\": [\"id\", \"name\", \"partner_id\", \"amount_total\", \"invoice_date\"]\n      }\n    ]\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        0
+      ],
+      "id": "99255891-cbbb-47ad-91c1-599201abdcd8",
+      "name": " Fetch Unpaid/New Invoices"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "result",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        624,
+        0
+      ],
+      "id": "15daede9-02a4-491e-9857-1b67cd99e973",
+      "name": "Split Invoice Array"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        832,
+        0
+      ],
+      "id": "6fd3285b-241e-4352-9fcc-a37526cf8fb1",
+      "name": "Loop Over Invoices"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://odoo:8069/web/session/authenticate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"db\": \"odoo\",\n    \"login\": \"admin\",\n    \"password\": \"admin\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1056,
+        16
+      ],
+      "id": "d29bf6a0-bac5-4222-bccb-ff7e1aaa1367",
+      "name": "Get Odoo Session"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "54aa6ee5-43cf-4216-87de-e4118de7436b",
+              "name": "session_cookie",
+              "value": "={{$json.headers['set-cookie'][0].split(';')[0]}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1280,
+        16
+      ],
+      "id": "04440c68-2561-4b84-8133-a01c3dce5e5b",
+      "name": "Extract Session ID"
+    },
+    {
+      "parameters": {
+        "url": "=http://odoo:8069/report/pdf/account.report_invoice_with_payments/{{$('Loop Over Invoices').item.json.id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{$json.session_cookie}}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1552,
+        16
+      ],
+      "id": "d46ac1e5-311b-49c8-9393-0edc63ca4b5a",
+      "name": "Fetch Invoice PDF"
+    },
+    {
+      "parameters": {
+        "url": "http://odoo:8069/jsonrpc",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"service\": \"object\",\n    \"method\": \"execute_kw\",\n    \"args\": [\n      \"odoo\",\n      {{$('Odoo Authenticate').item.json.result}},\n      \"admin\",\n      \"res.partner\",\n      \"read\",\n      [[{{$('Loop Over Invoices').item.json.partner_id[0]}}]],\n      {\n        \"fields\": [\"name\", \"mobile\", \"phone\"]\n      }\n    ]\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1744,
+        144
+      ],
+      "id": "e97417c2-fc9b-43d9-8930-2995f41c23ea",
+      "name": "Get Customer Contact"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1856,
+        -224
+      ],
+      "id": "7b92b5c5-1c37-4296-876d-d37de0180d44",
+      "name": "Merge PDF + Contact"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1021b6e3-b2cd-4d72-b50b-b9f52b4de245",
+              "name": "whatsapp_to",
+              "value": "=whatsapp:+{{$json.result[0].mobile.replace(/[^0-9]/g, '')}}",
+              "type": "string"
+            },
+            {
+              "id": "548be241-cd98-4dff-8cd8-1ea5fda1253e",
+              "name": "media_url",
+              "value": "=https://freeness-curliness-unbitten.ngrok-free.dev/webhook/invoice-pdf?invoice_id={{$('Loop Over Invoices').item.json.id}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2352,
+        -416
+      ],
+      "id": "354de68d-138c-4b76-a24f-8be249aa89e2",
+      "name": "Format WhatsApp Number"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://twilio.com",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "From",
+              "value": "whatsapp:+14155238886"
+            },
+            {
+              "name": "To",
+              "value": "={{ $json.whatsapp_to }}"
+            },
+            {
+              "name": "MediaUrl",
+              "value": "={{ $json.media_url }}"
+            },
+            {
+              "name": "Body",
+              "value": "Your invoice is ready. Please find it attached."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2640,
+        -176
+      ],
+      "id": "30aa7b87-add2-4ca9-be5b-e47736ed64e3",
+      "name": "Send via Twilio",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "wnxWXh0xKyeHrTXe",
+          "name": "Twilio Sandbox Basic Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f8c839da-4a75-4c79-af19-fbc1527d2243",
+              "leftValue": "={{ $json.result[0].mobile && $json.result[0].mobile !== false ? $json.result[0].mobile : '' }}",
+              "rightValue": "is not empty",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2096,
+        -224
+      ],
+      "id": "81014947-fae6-4271-9f4e-431b40742ce4",
+      "name": "Filter - Has Mobile Number"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2352,
+        -80
+      ],
+      "id": "a10ce7cc-9939-4347-a7aa-2df722594a69",
+      "name": "Skipped - No Mobile Number"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Odoo Authenticate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Odoo Authenticate": {
+      "main": [
+        [
+          {
+            "node": " Fetch Unpaid/New Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    " Fetch Unpaid/New Invoices": {
+      "main": [
+        [
+          {
+            "node": "Split Invoice Array",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Invoice Array": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Invoices": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Get Odoo Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Odoo Session": {
+      "main": [
+        [
+          {
+            "node": "Extract Session ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Session ID": {
+      "main": [
+        [
+          {
+            "node": "Fetch Invoice PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Invoice PDF": {
+      "main": [
+        [
+          {
+            "node": "Merge PDF + Contact",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Customer Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Customer Contact": {
+      "main": [
+        [
+          {
+            "node": "Merge PDF + Contact",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge PDF + Contact": {
+      "main": [
+        [
+          {
+            "node": "Filter - Has Mobile Number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format WhatsApp Number": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Invoices",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send via Twilio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter - Has Mobile Number": {
+      "main": [
+        [
+          {
+            "node": "Format WhatsApp Number",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skipped - No Mobile Number",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "07878a1a-c180-4cdb-9f42-20ae851120e2",
+  "meta": {
+    "instanceId": "3ba22a21b4f43fda87a6406853dd8a83e9b892ed400089a9e6f03bb16f4fb9a6"
+  },
+  "nodeGroups": [],
+  "id": "vC1gWY2AyDPm1ihq",
+  "tags": [
+    {
+      "updatedAt": "2026-07-03T08:59:05.761Z",
+      "createdAt": "2026-07-03T08:59:05.761Z",
+      "id": "1SSNHay51PiH1OqW",
+      "name": "PortfolioProject#1"
+    }
+  ]
+}
