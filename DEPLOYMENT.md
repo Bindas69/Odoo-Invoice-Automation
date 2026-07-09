@@ -11,7 +11,7 @@ Deploy the Odoo Invoice Automation workflow to a live server (DigitalOcean, AWS,
 
 ---
 
-#Below is the Architecture understanding for Future Refrences
+# Below is the Architecture understanding for Future Refrences
 
 ## Overview: Deployment Architecture
 
