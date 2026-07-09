@@ -27,7 +27,7 @@
         "url": "http://odoo:8069/jsonrpc",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"service\": \"common\",\n    \"method\": \"login\",\n    \"args\": [\"odoo\", \"admin\", \"admin\"]\n  }\n}",
+        "jsonBody": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"service\": \"common\",\n    \"method\": \"login\",\n    \"args\": [\"odoo\", \"{{$env.ODOO_USER}}\", \"{{$env.ODOO_PASSWORD}}\"]\n  }\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -45,7 +45,7 @@
         "url": "http://odoo:8069/jsonrpc",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"service\": \"object\",\n    \"method\": \"execute_kw\",\n    \"args\": [\n      \"odoo\",\n      {{$json.result}},\n      \"admin\",\n      \"account.move\",\n      \"search_read\",\n      [\n        [\n          [\"move_type\", \"=\", \"out_invoice\"],\n          [\"state\", \"=\", \"posted\"]\n        ]\n      ],\n      {\n        \"fields\": [\"id\", \"name\", \"partner_id\", \"amount_total\", \"invoice_date\"]\n      }\n    ]\n  }\n}",
+        "jsonBody": "={\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"service\": \"object\",\n    \"method\": \"execute_kw\",\n    \"args\": [\n      \"odoo\",\n      {{$json.result}},\n      \"{{$env.ODOO_PASSWORD}}\",\n      \"account.move\",\n      \"search_read\",\n      [\n        [\n          [\"move_type\", \"=\", \"out_invoice\"],\n          [\"state\", \"=\", \"posted\"]\n        ]\n      ],\n      {\n        \"fields\": [\"id\", \"name\", \"partner_id\", \"amount_total\", \"invoice_date\"]\n      }\n    ]\n  }\n}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -90,7 +90,7 @@
         "url": "http://odoo:8069/web/session/authenticate",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"db\": \"odoo\",\n    \"login\": \"admin\",\n    \"password\": \"admin\"\n  }\n}",
+        "jsonBody": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"call\",\n  \"params\": {\n    \"db\": \"odoo\",\n    \"login\": \"{{$env.ODOO_USER}}\",\n    \"password\": \"{{$env.ODOO_PASSWORD}}\"\n  }\n}",
         "options": {
           "response": {
             "response": {
@@ -186,7 +186,7 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [
-        1856,
+        1952,
         -224
       ],
       "id": "7b92b5c5-1c37-4296-876d-d37de0180d44",
@@ -224,7 +224,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://twilio.com",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{$env.TWILIO_ACCOUNT_SID}}/Messages.json",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpBasicAuth",
         "sendBody": true,
@@ -254,8 +254,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        2640,
-        -176
+        2608,
+        -416
       ],
       "id": "30aa7b87-add2-4ca9-be5b-e47736ed64e3",
       "name": "Send via Twilio",
@@ -295,7 +295,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        2096,
+        2144,
         -224
       ],
       "id": "81014947-fae6-4271-9f4e-431b40742ce4",
@@ -311,6 +311,48 @@
       ],
       "id": "a10ce7cc-9939-4347-a7aa-2df722594a69",
       "name": "Skipped - No Mobile Number"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO invoice_deliveries (invoice_id, invoice_number, customer_phone, delivery_status, sent_at)\nVALUES (\n  '{{$('Loop Over Invoices').item.json.id}}', \n  '{{$('Loop Over Invoices').item.json.name}}', \n  '{{$json.whatsapp_to || \"\"}}', \n  'sent', \n  NOW()\n);\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2928,
+        -416
+      ],
+      "id": "d4a0736d-a3a4-4709-8a3b-5550bd94dbf6",
+      "name": "Log Delivery to Postgres",
+      "credentials": {
+        "postgres": {
+          "id": "y2nAbTclC3hrUYaR",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO invoice_deliveries (invoice_id, invoice_number, customer_phone, delivery_status, sent_at)\nVALUES (\n  '{{$('Loop Over Invoices').item.json.id}}', \n  '{{$('Loop Over Invoices').item.json.name}}', \n  '{{ $json.whatsapp_to || \"\" }}',\n  'skipped_no_phone', \n  NOW()\n);",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2592,
+        -80
+      ],
+      "id": "03ba215b-fe03-45bc-85c3-c109c40c001a",
+      "name": "Log Skip to Postgres",
+      "credentials": {
+        "postgres": {
+          "id": "y2nAbTclC3hrUYaR",
+          "name": "Postgres account"
+        }
+      }
     }
   ],
   "pinData": {},
@@ -464,6 +506,28 @@
           }
         ]
       ]
+    },
+    "Send via Twilio": {
+      "main": [
+        [
+          {
+            "node": "Log Delivery to Postgres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skipped - No Mobile Number": {
+      "main": [
+        [
+          {
+            "node": "Log Skip to Postgres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
@@ -472,8 +536,9 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "07878a1a-c180-4cdb-9f42-20ae851120e2",
+  "versionId": "b428e5c6-c9ac-47ca-bf64-4a9e71b0cc9e",
   "meta": {
+    "templateCredsSetupCompleted": true,
     "instanceId": "3ba22a21b4f43fda87a6406853dd8a83e9b892ed400089a9e6f03bb16f4fb9a6"
   },
   "nodeGroups": [],
