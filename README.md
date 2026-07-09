@@ -47,10 +47,10 @@ This system is **two independent n8n workflows**, not one — that split is the 
 │       ↓                                                            │
 │  Get Odoo Session (session-cookie auth) → Extract Session ID       │
 │       ↓                                                            │
-│  ┌─────────────────────┐        ┌───────────────────────────┐     │
-│  │ Fetch Invoice PDF    │        │ Get Customer Contact       │     │
-│  │ (parallel branch)    │        │ (parallel branch)          │     │
-│  └──────────┬───────────┘        └────────────┬────────────────┘   │
+│  ┌─────────────────────┐         ┌───────────────────────────┐     │
+│  │ Fetch Invoice PDF    │        │ Get Customer Contact      │     │
+│  │ (parallel branch)    │        │ (parallel branch)         │     │
+│  └──────────┬───────────┘        └────────────┬───────────────┘    │
 │             └──────────────┬────────────────────┘                  │
 │                             ↓                                       │
 │                  Merge PDF + Contact                                │
