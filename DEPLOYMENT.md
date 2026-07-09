@@ -1,4 +1,11 @@
-# 🚀 Production Deployment Guide
+# Roadmap (Not Yet Built)
+
+Current status: runs locally via Docker Compose only.
+
+Planned for a future iteration:
+- VPS deployment (DigitalOcean or similar) with Nginx reverse proxy + SSL
+- Automated PostgreSQL backups
+- n8n queue mode for higher invoice volume# 🚀 Production Deployment Guide
 
 Deploy the Odoo Invoice Automation workflow to a live server (DigitalOcean, AWS, or Heroku).
 

@@ -1,497 +1,228 @@
 # 📧 Odoo Invoice Automation – Automated PDF Delivery via WhatsApp
 
-**An intelligent n8n workflow that automatically detects new invoices in Odoo ERP, converts them to PDF, and delivers them to clients via WhatsApp API.**
+**A production-tested n8n system that detects posted invoices in Odoo ERP, fetches their PDFs live via a stateless webhook, and delivers them to customers over WhatsApp through Twilio — with a full PostgreSQL audit trail.**
 
-![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)
+![Status](https://img.shields.io/badge/Status-Working%20End--to--End-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-blue)
-![n8n Version](https://img.shields.io/badge/n8n-v2.8+-orange)
-![Odoo Version](https://img.shields.io/badge/Odoo-17.0-red)
+![n8n](https://img.shields.io/badge/n8n-latest-orange)
+![Odoo](https://img.shields.io/badge/Odoo-17.0-red)
+![Docker](https://img.shields.io/badge/Docker-Compose-blue)
 
 ---
 
 ## 🎯 Overview
 
-This project automates the entire invoice delivery workflow:
+This isn't a tutorial project — it's a working automation built and debugged against a real Odoo instance, with all the friction that involves (session auth quirks, Docker volume permission bugs, n8n expression-evaluation edge cases). The `DEBUGGING_LOG.md` in this repo documents that process in detail, because the troubleshooting is honestly as representative of the job as the finished workflow.
 
-1. **Monitor** → n8n polls Odoo for newly created invoices (every 5 minutes)
-2. **Convert** → Automatically generates PDF from invoice data using Odoo's native PDF engine
-3. **Deliver** → Sends PDF to client's WhatsApp via Twilio API with a professional message
-4. **Log** → Records all transactions in PostgreSQL for compliance & auditing
+**What it does, end to end:**
 
-**Business Impact:**
-- ✅ Eliminates manual invoice sending (saves 2-3 hours/week)
-- ✅ Reduces invoice delivery delays (5-10 business days → 5 minutes)
-- ✅ Improves client satisfaction through modern delivery channels
-- ✅ Creates audit trail for compliance & accounting
+1. **Trigger** → n8n runs on a schedule (cron), authenticates to Odoo via JSON-RPC
+2. **Fetch** → Pulls all posted customer invoices (`account.move`, `move_type = out_invoice`, `state = posted`)
+3. **Loop** → Processes each invoice individually (batch size 1, for clean error isolation)
+4. **Generate PDF** → Authenticates a session cookie against Odoo, then fetches the invoice PDF live from Odoo's report engine — no PDFs are ever written to disk (see architecture note below on why)
+5. **Get contact** → Fetches the customer's WhatsApp-capable phone number from their Odoo contact record, in parallel with the PDF fetch
+6. **Filter** → Skips (and logs) any invoice whose customer has no valid mobile number, instead of failing the whole run
+7. **Deliver** → Sends the invoice via Twilio WhatsApp API, with the PDF served through a second, independent n8n webhook workflow that Twilio fetches from directly
+8. **Log** → Every outcome — sent or skipped — is written to a PostgreSQL audit table
+
+**Business case:** replaces manual invoice-by-invoice WhatsApp sending with a scheduled, hands-off pipeline. For an SME sending even 20-30 invoices/week, this removes real recurring admin time and gives an auditable delivery record accountants actually want.
 
 ---
 
 ## 📊 System Architecture
 
+This system is **two independent n8n workflows**, not one — that split is the key architectural decision, explained below.
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ODOO ERP (Port 8069)                         │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │ Sales Module → New Invoice Created → JSON-RPC API Ready  │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-                    (JSON-RPC HTTP Request)
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                  n8n WORKFLOW ENGINE (Port 5678)                │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │   Schedule  │→ │ Fetch Latest │→ │ For Each Invoice Loop  │  │
-│  │  Trigger    │  │   Invoices   │  │   (Parallel Process)   │  │
-│  └─────────────┘  └──────────────┘  └────────────────────────┘  │
-│                                              ↓                  │
-│  ┌──────────────┐  ┌────────────────┐  ┌─────────────────────┐  │
-│  │   Generate   │← │  Code Node:    │← │ Extract Invoice ID  │  │
-│  │    PDF       │  │ JSON Format    │  │ & Customer Phone    │  │
-│  └──────────────┘  └────────────────┘  └─────────────────────┘  │
-│        ↓                                                        │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │    IF Success: Send WhatsApp via Twilio API              │   │
-│  │    ELSE: Log Error & Send Notification to Admin          │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│               EXTERNAL SERVICES & LOGGING                       │
-│  ┌──────────────────┐        ┌──────────────────────────────┐   │
-│  │ Twilio WhatsApp  │        │  PostgreSQL (Audit Log)      │   │
-│  │ API (Delivery)   │        │  • invoice_id, timestamp     │   │
-│  │                  │        │  • delivery_status, phone    │   │
-│  │ Success: ✅      │        │  • error_logs (if failed)    │   │
-│  │ Failure: ❌      │        │  • retry_count               │   │
-│  └──────────────────┘        └──────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│  WORKFLOW 1: Invoice Automation - WhatsApp Delivery                │
+│                                                                      │
+│  Schedule Trigger                                                  │
+│       ↓                                                            │
+│  Odoo Authenticate (JSON-RPC login → uid)                          │
+│       ↓                                                            │
+│  Fetch Unpaid/New Invoices (account.move search_read)              │
+│       ↓                                                            │
+│  Split Invoice Array → Loop Over Invoices (batch size 1)           │
+│       ↓                                                            │
+│  Get Odoo Session (session-cookie auth) → Extract Session ID       │
+│       ↓                                                            │
+│  ┌─────────────────────┐        ┌───────────────────────────┐     │
+│  │ Fetch Invoice PDF    │        │ Get Customer Contact       │     │
+│  │ (parallel branch)    │        │ (parallel branch)          │     │
+│  └──────────┬───────────┘        └────────────┬────────────────┘   │
+│             └──────────────┬────────────────────┘                  │
+│                             ↓                                       │
+│                  Merge PDF + Contact                                │
+│                             ↓                                       │
+│              Filter - Has Mobile Number?                            │
+│              ┌──────────────┴──────────────┐                        │
+│           YES↓                          NO ↓                        │
+│    Format WhatsApp Number          Skipped - No Mobile Number       │
+│              ↓                              ↓                       │
+│      Send via Twilio (media_url        Log Skip to Postgres         │
+│       points at Workflow 2)                                         │
+│              ↓                                                      │
+│    Log Delivery to Postgres                                         │
+│              ↓                                                      │
+│    (loops back to next invoice)                                     │
+└────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────┐
+│  WORKFLOW 2: Serve Invoice PDFs (stateless webhook)                 │
+│                                                                      │
+│  Webhook (GET /invoice-pdf?invoice_id=N)                            │
+│       ↓                                                            │
+│  Get Odoo Session → Extract Session ID                              │
+│       ↓                                                            │
+│  Fetch Invoice PDF (live, by invoice_id from query param)           │
+│       ↓                                                            │
+│  Respond to Webhook (binary PDF)                                    │
+│                                                                      │
+│  Exposed publicly via ngrok tunnel so Twilio's servers can fetch it. │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+### Why two workflows instead of one?
+
+Twilio's WhatsApp API doesn't accept file attachments in the send request — it takes a `MediaUrl` and **fetches the file itself**, server-side, at send time. That means whatever URL you give it has to be publicly reachable and return the file live, independent of whatever n8n execution generated it.
+
+The first version of this system tried to solve that by writing the PDF to a shared Docker volume and having Twilio fetch it via a "read file from disk" webhook. That approach hit a genuine, documented Node.js/Docker-on-Windows bug: `fs.access()`-based writability checks return false negatives on certain bind-mounted and named-volume configurations, even though the underlying write would succeed. Full details and every dead end are in `DEBUGGING_LOG.md`.
+
+The fix was to **stop treating PDF generation as a one-time event and start treating it as a live, re-fetchable resource.** Workflow 2 doesn't care what Workflow 1 did — it independently re-authenticates to Odoo and re-renders the PDF fresh, every single time it's called. No shared state, no temp files, no cleanup, no permission edge cases. This is a stateless design and it's a legitimate pattern for exactly this class of problem (any time an external API needs to pull a file your system generates on demand).
 
 ---
 
 ## ⚙️ Technology Stack
 
 | Component | Version | Purpose |
-|-----------|---------|---------|
-| **Operating System** | Ubuntu 24.04 LTS (WSL2) | Stable Linux environment |
-| **ERP Platform** | Odoo 17.0 | Source of invoice data |
-| **Database** | PostgreSQL 16 | Persistent storage for logs |
-| **Automation Engine** | n8n v2.8+ | Workflow orchestration & execution |
-| **Node.js Runtime** | v22.22.2 | JavaScript execution in n8n |
-| **API Integration** | Odoo JSON-RPC + Twilio REST | External system communication |
-| **PDF Engine** | Odoo Native PDF | Invoice document generation |
-| **Deployment** | Docker Compose (optional) | Containerized production environment |
+|---|---|---|
+| **ERP Platform** | Odoo 17.0 (Community) | Source of invoice & customer data |
+| **Automation Engine** | n8n (latest, self-hosted) | Workflow orchestration |
+| **Database** | PostgreSQL 16 | n8n backend + invoice delivery audit log |
+| **Messaging** | Twilio WhatsApp API (Sandbox) | PDF delivery channel |
+| **Tunneling** | ngrok (static domain) | Exposes the local PDF-serving webhook publicly |
+| **Containerization** | Docker Compose | All services on a shared bridge network |
+| **API Integration** | Odoo JSON-RPC + session-cookie auth | Two separate Odoo auth flows (see below) |
+
+**Why two different Odoo auth methods in the same system:** JSON-RPC `execute_kw` calls (searching/reading records) use a `uid` from a `login` call. Odoo's PDF report engine, however, only works through its web controller (`/report/pdf/...`), which requires a session cookie, not a `uid`. These are genuinely two separate authentication mechanisms inside Odoo itself — this project uses both, correctly, for the calls each one is actually meant for.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Setup
 
 ### Prerequisites
-- ✅ Odoo 17 ERP instance running (local or cloud)
-- ✅ n8n instance (v2.8+)
-- ✅ PostgreSQL 16 or higher
-- ✅ Twilio account with WhatsApp sandbox enabled
-- ✅ Node.js v22+ (if running n8n locally)
+- Docker Desktop (with sufficient drive sharing enabled for bind mounts, if used)
+- A Twilio account with WhatsApp Sandbox enabled, and a recipient number that has joined the sandbox
+- ngrok account (free tier is sufficient)
 
-### Installation Steps
+### 1. Clone and configure environment
 
-#### 1️⃣ Clone This Repository
 ```bash
-git clone https://github.com/yourusername/Odoo-Invoice-Automation.git
+git clone https://github.com/Bindas69/Odoo-Invoice-Automation.git
 cd Odoo-Invoice-Automation
-```
-
-#### 2️⃣ Set Up Environment Variables
-```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+Edit `.env`:
 ```env
-# Odoo Configuration
-ODOO_URL=http://localhost:8069
-ODOO_DB=odoo_db
-ODOO_USERNAME=admin
-ODOO_PASSWORD=your_admin_password
-
-# Twilio Configuration (WhatsApp)
+ODOO_USER=admin
+ODOO_PASSWORD=admin
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_AUTH_TOKEN=your_auth_token_here
-TWILIO_WHATSAPP_FROM=whatsapp:+1234567890  # Your Twilio WhatsApp number
-TWILIO_WEBHOOK_URL=https://your-domain.com/webhooks/twilio
-
-# n8n Configuration
-N8N_URL=http://localhost:5678
-N8N_API_KEY=your_n8n_api_key
-
-# PostgreSQL (for audit logging)
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=odoo
-DB_PASSWORD=odoopass123
-DB_NAME=invoice_automation_logs
 ```
 
-#### 3️⃣ Import the Workflow into n8n
+> **Note on `N8N_BLOCK_ENV_ACCESS_IN_NODE`:** this project references `ODOO_USER`, `ODOO_PASSWORD`, and `TWILIO_ACCOUNT_SID` via `{{$env.VAR}}` expressions inside node parameters, rather than hardcoding them into committed workflow JSON. This requires `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` in `docker-compose.yml` (already set). Be aware: n8n has a known cosmetic bug where the expression editor shows a red "access to env vars denied" warning even when the value resolves correctly at execution time — confirmed via n8n's own GitHub issue tracker. Trust the **Execute step** output, not the inline preview.
 
-**Option A: Manual Import (Recommended for learning)**
-1. Open n8n dashboard: `http://localhost:5678`
-2. Click **+ Create Workflow**
-3. Go to **Menu** → **Import Workflow**
-4. Upload `workflows/odoo-invoice-automation.json` (from this repo)
-5. Click **Import**
+The Twilio **Auth Token** is *not* stored as an env var — it's stored as an n8n credential (Basic Auth), referenced by the `Send via Twilio` node, which keeps it encrypted at rest and out of the workflow JSON entirely.
 
-**Option B: API Import (For automation)**
-```bash
-curl -X POST http://localhost:5678/api/v1/workflows \
-  -H "Authorization: Bearer $N8N_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d @workflows/odoo-invoice-automation.json
-```
-
-#### 4️⃣ Configure n8n Credentials
-
-In the n8n UI, set up these credentials:
-
-**Odoo Credentials (Basic Auth):**
-- Type: Generic Credential Type
-- User: `admin`
-- Password: (your Odoo admin password)
-- Allowed Domains: `localhost`
-
-**Twilio Credentials:**
-- Type: Twilio
-- Account SID: (from Twilio dashboard)
-- Auth Token: (from Twilio dashboard)
-
-#### 5️⃣ Test the Workflow
-
-**Manual Test:**
-1. In n8n, click **Test Workflow**
-2. Check the execution logs for any errors
-3. Verify that the `Code` node processes data correctly
-4. Confirm Twilio sends a test message to your phone
-
-**Check Audit Log:**
-```bash
-psql -U odoo -d invoice_automation_logs -c "SELECT * FROM invoice_deliveries ORDER BY created_at DESC LIMIT 5;"
-```
-
-#### 6️⃣ Deploy to Production
+### 2. Start the stack
 
 ```bash
-# Option 1: Run n8n in production mode with Docker
-docker-compose -f docker-compose.yml up -d
-
-# Option 2: Manual deployment on DigitalOcean/AWS (see DEPLOYMENT.md)
+docker-compose up -d
 ```
+
+This brings up PostgreSQL, Odoo, and n8n on a shared `invoice_network`. Odoo's Invoicing app needs to be installed manually on first run (Settings → Apps → search "Invoicing" → Install), and the admin user needs **Billing Administrator** access rights explicitly set (Settings → Users → Access Rights → Invoicing) — Odoo's UI can visually show a permission as set without it actually committing to the underlying access-control group, so verify this directly if you hit `AccessError` on `account.move`.
+
+### 3. Start ngrok
+
+```bash
+ngrok http 5678
+```
+
+Copy the forwarding URL (e.g. `https://xxxx.ngrok-free.dev`) — this is what Workflow 1's `Format WhatsApp Number` node uses to build the `media_url` Twilio fetches from.
+
+### 4. Import both workflows into n8n
+
+Import `workflows/Invoice Automation - WhatsApp Delivery.json` and `workflows/Serve Invoice PDFs.json`. Update the ngrok URL inside `Format WhatsApp Number` to match your current tunnel (ngrok's free tier issues a new URL on restart unless you're on a static domain).
+
+**Activate Workflow 2 first** (toggle "Active" — webhooks only respond when the workflow is saved and active, not just open in the editor), then test Workflow 1.
+
+### 5. Verify
+
+Run Workflow 1 manually. Check three things:
+- The WhatsApp message actually arrives (confirms Twilio + the webhook fetch worked)
+- Query the audit log:
+```bash
+docker exec -it postgres_invoice_automation psql -U odoo -d invoice_automation_logs \
+  -c "SELECT * FROM invoice_deliveries ORDER BY created_at DESC LIMIT 5;"
+```
+- Confirm both `sent` and `skipped_no_phone` statuses appear correctly depending on test data
 
 ---
 
-## 📋 Workflow Nodes Breakdown
+## 🐛 Real Bugs Hit While Building This
 
-### **Node 1: Schedule Trigger**
-- **Frequency:** Every 5 minutes
-- **Purpose:** Polls Odoo for newly created invoices
-- **Output:** Timestamp data for logging
+Full write-ups are in `DEBUGGING_LOG.md`. Summary, because this is genuinely useful signal for anyone evaluating this repo:
 
-```json
-{
-  "trigger_interval": "5 minutes",
-  "trigger_mode": "Every N minutes",
-  "minutes_between_triggers": 5
-}
-```
+| Bug | Root Cause | Fix |
+|---|---|---|
+| Malformed n8n editor URL | `N8N_HOST` and `WEBHOOK_URL` both contained full URLs, got concatenated | `N8N_HOST` must be a bare hostname |
+| `session_id=null` on every request | HTTP node wasn't configured to expose response headers | Enable "Include Response Headers and Status Code" |
+| 403 on PDF fetch despite valid session | Wrong Odoo report technical name (`account.report_invoice` doesn't exist in this instance) | Correct name is `account.report_invoice_with_payments` |
+| `AccessError` on `account.move` despite UI showing correct permissions | Odoo's Access Rights dropdown didn't commit to the real `res.groups` relation | Add the user from the group record directly, not the user form |
+| IF filter broke on empty mobile field | Odoo returns boolean `false` (not `null`/`""`) for empty fields | Explicit normalization: `field !== false ? field : ''` |
+| PDF file wouldn't write to disk | Node.js `fs.access()` writability check gives false negatives on Docker-Windows bind mounts | Abandoned disk writes entirely; switched to stateless webhook re-fetch |
+| GitHub Push Protection blocked commit | Twilio Account SID hardcoded directly in a node's URL field | Replaced with `{{$env.TWILIO_ACCOUNT_SID}}` expression |
 
-### **Node 2: HTTP Request – Fetch Invoices**
-- **Method:** POST
-- **URL:** `http://localhost:8069/jsonrpc`
-- **Authentication:** Basic Auth (admin credentials)
-- **Payload:**
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "call",
-  "params": {
-    "service": "object",
-    "method": "execute",
-    "args": [
-      "odoo_db",
-      2,
-      "admin_password",
-      "account.move",
-      "search_read",
-      [["move_type", "=", "out_invoice"], ["invoice_date", ">=", "2026-01-01"]],
-      ["id", "name", "partner_id", "amount_total", "state"]
-    ]
-  },
-  "id": 1
-}
-```
+---
 
-**Output:** List of invoice records
-```json
-[
-  {
-    "id": 42,
-    "name": "INV/2026/001",
-    "partner_id": [5, "Acme Corp"],
-    "amount_total": 5000.00,
-    "state": "posted"
-  }
-]
-```
+## 📊 Database Schema
 
-### **Node 3: Code Node – Process & Format**
-**Language:** JavaScript
-
-```javascript
-// Extract relevant invoice data and prepare for PDF generation
-const invoices = $input.all();
-const processed = invoices.map(inv => ({
-  invoice_id: inv.json.result[0]?.id,
-  invoice_number: inv.json.result[0]?.name,
-  customer_name: inv.json.result[0]?.partner_id?.[1],
-  amount: inv.json.result[0]?.amount_total,
-  status: inv.json.result[0]?.state,
-  timestamp: new Date().toISOString()
-}));
-
-return processed;
-```
-
-### **Node 4: Loop Over Invoices**
-- **Node Type:** Item Lists → Loop Over Items
-- **Purpose:** Process each invoice individually
-- **Allows parallel WhatsApp delivery**
-
-### **Node 5: Generate PDF from Odoo**
-- **Method:** POST to Odoo API
-- **Endpoint:** `/report/download`
-- **Report Template:** `account.report_invoice` (standard Odoo invoice PDF)
-- **Output:** Base64-encoded PDF file
-
-### **Node 6: Send WhatsApp via Twilio**
-- **Node Type:** Twilio (WhatsApp)
-- **From:** Your Twilio WhatsApp number (e.g., `whatsapp:+1234567890`)
-- **To:** Customer phone (fetched from Odoo contact)
-- **Message Body:**
-```
-Hi {{customer_name}},
-
-Your invoice {{invoice_number}} for ${{amount}} is ready!
-
-📄 Please find the invoice attached.
-
-Questions? Reply to this message.
-
-Thanks,
-Finance Team
-```
-- **Attachment:** PDF file (from Node 5)
-
-### **Node 7: Log to PostgreSQL**
-- **Type:** PostgreSQL Node
-- **Query:**
 ```sql
-INSERT INTO invoice_deliveries 
-  (invoice_id, invoice_number, customer_phone, delivery_status, sent_at)
-VALUES 
-  ($1, $2, $3, $4, NOW());
+CREATE TABLE invoice_deliveries (
+  id SERIAL PRIMARY KEY,
+  invoice_id INTEGER,
+  invoice_number VARCHAR(50),
+  customer_phone VARCHAR(20),
+  delivery_status VARCHAR(20),  -- 'sent' | 'skipped_no_phone'
+  sent_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
 ```
 
-### **Node 8: Error Handling**
-- **If Twilio fails:** Retry logic (max 3 attempts)
-- **If PDF generation fails:** Log error and notify admin via email
-- **If database connection fails:** Queue message and retry on next run
-
----
-
-## 🔧 Configuration Options
-
-### Customization: Change Invoice Query
-
-Edit **Node 2** payload to change which invoices are fetched:
-
-**Only unpaid invoices:**
-```json
-[["move_type", "=", "out_invoice"], ["payment_state", "!=", "paid"]]
-```
-
-**Invoices from specific customer:**
-```json
-[["move_type", "=", "out_invoice"], ["partner_id", "=", 5]]
-```
-
-**Invoices older than 7 days:**
-```json
-[["move_type", "=", "out_invoice"], ["invoice_date", "<", "2026-06-20"]]
-```
-
-### Customization: Change WhatsApp Message
-
-Edit **Node 6** message template to match your branding:
-
-```
-🎉 Invoice Ready – {{invoice_number}}
-
-Dear {{customer_name}},
-
-Your invoice for {{currency}} {{amount}} dated {{invoice_date}} has been generated.
-
-Download here: [link]
-Due Date: {{due_date}}
-
-Questions? Contact finance@company.com
-
-Best regards,
-{{company_name}}
-```
-
----
-
-## 📊 Monitoring & Logging
-
-### View Delivery Status
-```bash
-psql -U odoo -d invoice_automation_logs << EOF
-SELECT 
-  invoice_number,
-  delivery_status,
-  sent_at,
-  error_message
+Query recent activity:
+```sql
+SELECT invoice_number, delivery_status, customer_phone, sent_at
 FROM invoice_deliveries
-WHERE sent_at > NOW() - INTERVAL '24 hours'
-ORDER BY sent_at DESC;
-EOF
-```
-
-### Monitor n8n Workflow Executions
-- Open n8n dashboard → Click workflow → **Executions** tab
-- View each run's input/output and error logs
-- Set up email alerts for failed runs (n8n Pro feature)
-
-### Set Up Error Notifications
-Add an Email node at the end of error handlers to notify admin:
-```
-To: admin@company.com
-Subject: ⚠️ Invoice Automation Failed – {{invoice_number}}
-Body: Error during WhatsApp delivery. Check n8n logs.
+ORDER BY created_at DESC
+LIMIT 10;
 ```
 
 ---
 
-## 💰 Cost Breakdown (Monthly)
+## 🛡️ Security Notes
 
-| Service | Cost | Notes |
-|---------|------|-------|
-| **Twilio WhatsApp** | $0–100 | $0.0075 per message (first 1000 free with free trial) |
-| **n8n Cloud** | $0–30 | Free tier: 5k executions/month; Pro: $20/month |
-| **PostgreSQL** | $0–50 | Free on local machine; $12–50/month on cloud |
-| **Odoo Cloud** | $30–200 | Depends on modules & user count |
-| **Server Hosting** | $0–50 | Free for local/WSL; ~$12/month for VPS |
-| **TOTAL** | **$30–430/mo** | For SME use case |
+- `.env` is gitignored; no credentials are committed
+- Twilio Auth Token lives in n8n's encrypted credential store, never in workflow JSON
+- Twilio Account SID and Odoo credentials are referenced via `{{$env.*}}` expressions rather than literals, so exported workflow JSON contains only variable *names*, never values
+- Current setup uses Odoo's `admin/admin` for local dev — **not committed anywhere**, but also not appropriate for a real deployment; a production version would use a dedicated Odoo API user with only Invoicing-read access, not full admin
 
 ---
 
-## 🛡️ Security Best Practices
+## 📈 What's Next
 
-✅ **Do:**
-- Store credentials in `.env` file (never commit to GitHub)
-- Use API keys instead of passwords where possible
-- Enable SSL/TLS for production deployments
-- Audit WhatsApp logs for compliance (GDPR)
-- Restrict n8n access to VPN/internal network
-
-❌ **Don't:**
-- Hardcode passwords in workflow JSON
-- Expose Odoo admin account credentials
-- Send invoices without customer consent
-- Store PDFs unencrypted in cloud storage
-
-**Add to `.gitignore`:**
-```
-.env
-.env.local
-*.key
-*.pem
-logs/
-node_modules/
-```
-
----
-
-## 🧪 Testing Scenarios
-
-### Scenario 1: New Invoice Created
-1. Create invoice manually in Odoo
-2. Wait for workflow trigger (5 minutes max)
-3. Verify WhatsApp message received on phone
-4. Check audit log: `delivery_status = 'sent'`
-
-### Scenario 2: Invalid Phone Number
-1. Create invoice with missing/invalid customer phone
-2. Workflow should fail gracefully
-3. Error logged: `"Error: Invalid phone number format"`
-4. Admin notified via email
-
-### Scenario 3: Odoo API Timeout
-1. Temporarily stop Odoo service
-2. Workflow will retry automatically
-3. Max retries: 3 (configurable)
-4. After 3 failures: Alert admin
-
----
-
-## 📈 Performance Metrics
-
-**Current Benchmarks (Based on University Testing):**
-- ✅ Workflow execution time: 8–12 seconds per invoice
-- ✅ PDF generation time: 2–3 seconds (Odoo native)
-- ✅ WhatsApp API response time: 1–2 seconds
-- ✅ Success rate: 99.2% (one failure per ~150 invoices)
-
-**Scalability:**
-- Safe to process: **500 invoices/month** on basic hardware
-- For 5,000+ invoices/month: Consider n8n Pro + dedicated server
-
----
-
-## 🐛 Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| **"Connection refused" to Odoo** | Verify Odoo is running on port 8069: `curl localhost:8069` |
-| **Twilio auth error** | Check credentials in n8n → Credentials. Re-authenticate. |
-| **PDF not generating** | Verify "account" module enabled in Odoo. Check PDF printer permissions. |
-| **Workflow hangs** | n8n timeout default is 5min. Increase in workflow settings if needed. |
-| **Duplicate WhatsApp messages** | Check n8n execution logs. Clear cache if webhook misfired. |
-| **Customer phone blank** | Update Odoo contact record with WhatsApp number. |
-
-**Enable Debug Logging:**
-```bash
-export N8N_LOG_LEVEL=debug
-n8n start
-```
-
----
-
-## 📚 Documentation
-
-- **[DEPLOYMENT.md](./DEPLOYMENT.md)** — Deploy to DigitalOcean, AWS, or VPS
-- **[CUSTOMIZATION.md](./CUSTOMIZATION.md)** — Advanced workflow modifications
-- **[API_REFERENCE.md](./API_REFERENCE.md)** — Detailed Odoo JSON-RPC API calls
-- **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)** — Common errors & solutions
-
----
-
-## 🤝 Support & Community
-
-- 🆘 **Issues:** Open a GitHub issue or email `support@yourdomain.com`
-- 💬 **Discussions:** [n8n Community Forum](https://community.n8n.io)
-- 🎓 **Learning:** [Official n8n Academy](https://learn.n8n.io)
-- 🌐 **Odoo Docs:** [Odoo Documentation](https://www.odoo.com/documentation/17.0)
+- **Project #2:** AI Customer Support Agent (n8n AI Agent node + Odoo Inventory JSON-RPC for real-time stock queries)
+- **Project #3:** Production DevOps — migrate this stack to a live VPS with monitoring and alerting
 
 ---
 
@@ -499,30 +230,6 @@ n8n start
 
 MIT License © 2026 Taha Tahir
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
 ---
 
-## 🌟 Show Your Support
-
-If this project helped you, please:
-- ⭐ **Star this repo** on GitHub
-- 📢 **Share it** with others learning n8n
-- 💼 **Tag @n8n** and [@TahaButt] on LinkedIn when you use it
-- 📧 **Email:** tahabutt6ix9ine@goole.com for consulting inquiries
-
----
-
-## 🚀 What's Next?
-
-- Phase 2: Build AI Customer Support Agent (Project #2)
-- Phase 3: Deploy to production with Docker Compose
-- Phase 4: Scale to 10+ client deployments
-
-**Your journey to n8n expertise starts here. Happy automating! 🎯**
-
----
-
-*Last Updated: June 2026 | Maintained by Taha Tahir | Status: Production Ready*
+*Maintained by Taha Tahir — Islamabad, Pakistan. Built and debugged against a real Odoo instance, not a tutorial sandbox.*

@@ -45,7 +45,8 @@ services:
     networks:
       - invoice_network
     restart: unless-stopped
-    command: odoo --db_host=postgres --db_port=5432 --db_user=odoo --db_password=odoopass123 --database=odoo --init=base
+    command: odoo --db_host=postgres --db_port=5432 --db_user=odoo --db_password=odoopass123 --database=odoo
+
 
   # n8n Automation Platform
   n8n:
@@ -53,7 +54,7 @@ services:
     container_name: n8n_invoice_automation
     environment:
       # Basic n8n settings
-      N8N_HOST: ${N8N_URL:-localhost:5678}
+      N8N_HOST: ${N8N_URL:-localhost}
       N8N_PORT: 5678
       N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
       
@@ -71,6 +72,10 @@ services:
       N8N_EXECUTION_DATA_SAVE_ON_SUCCESS: "true"
       N8N_EXECUTION_DATA_SAVE_ON_FAILURE: "true"
       N8N_EXECUTION_DATA_SAVE_ON_ERROR: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      ODOO_USER: ${ODOO_USER}
+      ODOO_PASSWORD: ${ODOO_PASSWORD}
       
       # Logging
       N8N_LOG_LEVEL: ${N8N_LOG_LEVEL:-info}
@@ -97,11 +102,13 @@ services:
     networks:
       - invoice_network
     restart: unless-stopped
+    
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5678/api/v1/health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "n8n", "--version"]
+      interval: 10s
+      timeout: 5s
       retries: 3
+  
 
   # Redis (Optional, for queue-based execution in production)
   # Uncomment this section if running n8n in queue mode
