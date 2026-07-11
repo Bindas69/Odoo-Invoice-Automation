@@ -47,10 +47,10 @@ This system is **two independent n8n workflows**, not one — that split is the 
 │       ↓                                                            │
 │  Get Odoo Session (session-cookie auth) → Extract Session ID       │
 │       ↓                                                            │
-│  ┌─────────────────────┐         ┌───────────────────────────┐     │
-│  │ Fetch Invoice PDF    │        │ Get Customer Contact      │     │
-│  │ (parallel branch)    │        │ (parallel branch)         │     │
-│  └──────────┬───────────┘        └────────────┬───────────────┘    │
+│  ┌─────────────────────┐        ┌───────────────────────────┐     │
+│  │ Fetch Invoice PDF    │        │ Get Customer Contact       │     │
+│  │ (parallel branch)    │        │ (parallel branch)          │     │
+│  └──────────┬───────────┘        └────────────┬────────────────┘   │
 │             └──────────────┬────────────────────┘                  │
 │                             ↓                                       │
 │                  Merge PDF + Contact                                │
@@ -191,18 +191,31 @@ Full write-ups are in `DEBUGGING_LOG.md`. Summary, because this is genuinely use
 ```sql
 CREATE TABLE invoice_deliveries (
   id SERIAL PRIMARY KEY,
-  invoice_id INTEGER,
-  invoice_number VARCHAR(50),
-  customer_phone VARCHAR(20),
-  delivery_status VARCHAR(20),  -- 'sent' | 'skipped_no_phone'
+  invoice_id INTEGER NOT NULL,
+  invoice_number VARCHAR(100) NOT NULL,
+  customer_id INTEGER,
+  customer_name VARCHAR(255),
+  customer_phone VARCHAR(20) NOT NULL,
+  delivery_channel VARCHAR(50) DEFAULT 'whatsapp',
+  delivery_status VARCHAR(50) NOT NULL,   -- 'sent' | 'skipped_no_phone'
+  attempt_count INTEGER DEFAULT 1,
+  max_attempts INTEGER DEFAULT 3,          -- reserved for future retry logic
   sent_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW()
+  error_message TEXT,
+  error_code VARCHAR(50),
+  twilio_sid VARCHAR(100),                 -- Twilio message SID
+  pdf_size INTEGER,                        -- PDF size in bytes
+  response_time_ms INTEGER,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
+The schema has a few columns the current workflow doesn't populate yet (`error_message`, `error_code`, `attempt_count`/`max_attempts` beyond their defaults) — they're there because the table was designed with retry logic in mind, which isn't built yet. `delivery_status` currently only ever holds two values in practice: `sent` or `skipped_no_phone`.
+
 Query recent activity:
 ```sql
-SELECT invoice_number, delivery_status, customer_phone, sent_at
+SELECT invoice_number, delivery_status, customer_phone, twilio_sid, sent_at
 FROM invoice_deliveries
 ORDER BY created_at DESC
 LIMIT 10;
