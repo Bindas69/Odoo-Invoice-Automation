@@ -31,8 +31,8 @@ dist/
 build/
 *.tgz
 
-# Database backups
-*.sql
+# Database backups (not schema/init files like init.sql)
+*_backup.sql
 *.sql.gz
 backups/
 
